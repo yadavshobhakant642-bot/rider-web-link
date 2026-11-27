@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Live Rider Tracking Link</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #121218;
+      color: #ffffff;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      padding: 16px;
+    }
+    .card {
+      background: #1e1e28;
+      border-radius: 16px;
+      padding: 24px;
+      width: 100%;
+      max-width: 400px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      text-align: center;
+    }
+    h2 { margin-top: 0; color: #00e676; }
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 12px;
+      margin: 8px 0;
+      border-radius: 10px;
+      border: 1px solid #3a3a4a;
+      background: #121218;
+      color: #fff;
+      font-size: 16px;
+    }
+    button {
+      width: 100%;
+      padding: 14px;
+      margin-top: 12px;
+      border: none;
+      border-radius: 30px;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+      background: #2e7d32;
+      color: #fff;
+    }
+    button.stop { background: #c62828; }
+    .status {
+      margin-top: 16px;
+      padding: 12px;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.06);
+      font-size: 14px;
+      color: #ffd54f;
+    }
+    .active-dot { color: #00e676; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Live Rider Tracker</h2>
+    <p style="color:#aaa;font-size:13px;">Koi app install karne ki zaroorat nahi. Neeche apna number aur code daalkar Location Allow karein.</p>
+
+    <input id="phone" type="tel" placeholder="10-digit Mobile Number (e.g. 9876543210)" />
+    <input id="code" type="number" placeholder="6-digit Code" />
+
+    <button id="startBtn" onclick="startTracking()">Start Live Location</button>
+    <button id="stopBtn" class="stop" onclick="stopTracking()" style="display:none;">Stop Tracking</button>
+
+    <div class="status" id="statusBox">Ready. Start button dabayein.</div>
+  </div>
+
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyBcJzR6zAaBWFzR1yWwGbbZnbKOCbcKYfM",
+      authDomain: "live-rider-tracker.firebaseapp.com",
+      databaseURL: "https://live-rider-tracker-default-rtdb.firebaseio.com",
+      projectId: "live-rider-tracker",
+      storageBucket: "live-rider-tracker.firebasestorage.app",
+      messagingSenderId: "962227685184",
+      appId: "1:962227685184:web:5756954a3f3f924f949ca5"
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const db = firebase.database();
+
+    let watchId = null;
+    let activeKey = null;
+    let activeName = "Rider";
+    let activePhone = "";
+
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("id")) document.getElementById("phone").value = params.get("id").replace(/^91/, "");
+    if (params.get("code")) document.getElementById("code").value = params.get("code");
+
+    function setStatus(msg, isLive = false) {
+      const box = document.getElementById("statusBox");
+      box.innerHTML = isLive ? `<span class="active-dot">● LIVE:</span> ${msg}` : msg;
+    }
+
+    function normalizeKey(raw) {
+      let d = raw.replace(/\D/g, "");
+      if (d.length === 10) d = "91" + d;
+      return d;
+    }
+
+    async function startTracking() {
+      const rawPhone = document.getElementById("phone").value.trim();
+      const code = document.getElementById("code").value.trim();
+      const key = normalizeKey(rawPhone);
+
+      if (key.length < 12 || code.length < 4) {
+        setStatus("Sahi mobile number aur code daalein.");
+        return;
+      }
+
+      setStatus("Verify ho raha hai...");
+      try {
+        if (!auth.currentUser) await auth.signInAnonymously();
+
+        const snap = await db.ref("allowed_riders/" + key).once("value");
+        if (!snap.exists()) {
+          setStatus("Aapka number list me nahi hai ya Admin ne Unlist kar diya hai.");
+          return;
+        }
+        const info = snap.val();
+        if (info.active === false) {
+          setStatus("Aapko Admin dwara Unlist kar diya gaya hai.");
+          return;
+        }
+        if (String(info.code) !== code) {
+          setStatus("Galat code! Admin se sahi link ya code lein.");
+          return;
+        }
+
+        activeKey = key;
+        activeName = info.name || "Rider";
+        activePhone = info.phone || ("+" + key);
+
+        db.ref("allowed_riders/" + activeKey).on("value", (s) => {
+          if (!s.exists() || s.val().active === false) {
+            stopTracking("Admin ne aapko Unlist kar diya hai.");
+          }
+        });
+
+        if (!navigator.geolocation) {
+          setStatus("Is browser me GPS support nahi hai.");
+          return;
+        }
+
+        document.getElementById("startBtn").style.display = "none";
+        document.getElementById("stopBtn").style.display = "block";
+
+        watchId = navigator.geolocation.watchPosition(
+          (pos) => {
+            const lat = pos.coords.latitude;
+            const lng = pos.coords.longitude;
+            const speedKmh = pos.coords.speed ? Math.max(0, pos.coords.speed * 3.6) : 0;
+
+            db.ref("riders/" + activeKey).update({
+              riderId: activeKey,
+              name: activeName,
+              phone: activePhone,
+              lat: lat,
+              lng: lng,
+              speed: Number(speedKmh.toFixed(1)),
+              status: "active",
+              lastUpdated: Date.now()
+            });
+
+            setStatus(`${activeName} (${lat.toFixed(5)}, ${lng.toFixed(5)})`, true);
+          },
+          (err) => {
+            setStatus("Location Error: " + err.message + " (GPS & Permission Allow karein)");
+          },
+          { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
+        );
+      } catch (e) {
+        setStatus("Error: " + e.message);
+      }
+    }
+
+    function stopTracking(reason = "Tracking rok di gayi hai.") {
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+      if (activeKey) {
+        db.ref("riders/" + activeKey).update({ status: "paused", lastUpdated: Date.now() });
+        db.ref("allowed_riders/" + activeKey).off();
+      }
+      document.getElementById("startBtn").style.display = "block";
+      document.getElementById("stopBtn").style.display = "none";
+      setStatus(reason);
+    }
+  </script>
+</body>
+</html>
